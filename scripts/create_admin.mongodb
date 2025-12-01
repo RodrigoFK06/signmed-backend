@@ -1,0 +1,42 @@
+// Script MongoDB para crear usuario administrador
+// Ejecutar en MongoDB Compass o MongoDB Shell
+
+// Conectar a la base de datos
+use sign_language;
+
+// OPCIÓN 1: Hash de contraseña ya generado
+// Password: Admin123456
+// Hash generado con pbkdf2_sha256
+db.users.insertOne({
+  "email": "admin@signmed.com",
+  "password_hash": "$pbkdf2-sha256$29000$3pvzPqd0Tmlt7V0rRehdCw$EqWLBWW7O.LuJlL9gLjYW0z0T4OQxZs5xYPq8LqTzlI",
+  "nickname": "admin",
+  "role": "ADMIN",
+  "status": "approved",
+  "created_at": new Date()
+});
+
+// OPCIÓN 2: Para generar tu propio hash
+// 1. Genera el hash usando Python:
+//    python scripts/generate_password_hash.py
+// 2. Reemplaza el password_hash arriba con el hash generado
+// 3. Ejecuta el insertOne
+
+// OPCIÓN 3: Actualizar usuario existente a ADMIN
+// Si ya tienes un usuario y quieres hacerlo admin:
+db.users.updateOne(
+  { "email": "tu_email@ejemplo.com" },
+  {
+    $set: {
+      "role": "ADMIN",
+      "status": "approved",
+      "updated_at": new Date()
+    }
+  }
+);
+
+// Verificar que el admin fue creado
+db.users.findOne({ "role": "ADMIN" });
+
+// Ver todos los admins
+db.users.find({ "role": "ADMIN" }).pretty();

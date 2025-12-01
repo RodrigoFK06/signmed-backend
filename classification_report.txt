@@ -1,0 +1,11 @@
+                         precision    recall  f1-score   support
+
+a_mi_me_duele_la_cabeza       0.98      0.98      0.98        42
+                  dolor       1.00      1.00      1.00        25
+     tengo_fiebre_y_tos       0.97      1.00      0.99        36
+   tiene_cirujia_previa       1.00      0.97      0.99        34
+                     yo       1.00      1.00      1.00        15
+
+               accuracy                           0.99       152
+              macro avg       0.99      0.99      0.99       152
+           weighted avg       0.99      0.99      0.99       152
