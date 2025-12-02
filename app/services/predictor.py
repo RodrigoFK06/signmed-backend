@@ -31,6 +31,7 @@ def load_model_safe(model_path: Path):
     """Carga el modelo con manejo de parámetros deprecados de LSTM."""
     import h5py
     import json
+    from keras import layers, models
     
     print(f"🔄 Cargando modelo desde {model_path}...")
     
@@ -67,11 +68,40 @@ def load_model_safe(model_path: Path):
                 # Limpiar configuración
                 remove_deprecated_params(config)
                 
-                # Reconstruir modelo desde configuración limpia
+                # Reconstruir modelo manualmente capa por capa
                 print("✅ Configuración limpiada. Reconstruyendo modelo...")
-                model = tf.keras.models.model_from_json(json.dumps(config))
+                
+                # Crear modelo Sequential
+                model = models.Sequential()
+                
+                # Agregar capas desde la configuración
+                layer_configs = config.get('config', {}).get('layers', [])
+                for layer_config in layer_configs:
+                    layer_class_name = layer_config.get('class_name')
+                    layer_params = layer_config.get('config', {})
+                    
+                    # Saltar InputLayer (se crea automáticamente)
+                    if layer_class_name == 'InputLayer':
+                        continue
+                    
+                    # Obtener la clase de capa correspondiente
+                    layer_class = getattr(layers, layer_class_name, None)
+                    if layer_class:
+                        # Filtrar parámetros no soportados
+                        supported_params = {k: v for k, v in layer_params.items() 
+                                          if k not in ['time_major', 'batch_input_shape', 'dtype']}
+                        try:
+                            model.add(layer_class(**supported_params))
+                        except Exception as layer_e:
+                            print(f"⚠️ Error agregando capa {layer_class_name}: {layer_e}")
+                            # Intenta con parámetros mínimos
+                            if layer_class_name == 'LSTM':
+                                model.add(layer_class(units=supported_params.get('units', 128)))
+                            else:
+                                raise
                 
                 # Cargar pesos del archivo original
+                print("✅ Cargando pesos...")
                 model.load_weights(str(model_path))
                 print("✅ Modelo cargado exitosamente con compatibilidad TensorFlow 2.19")
                 
