@@ -78,25 +78,48 @@ def load_model_safe(model_path: Path):
                 layer_configs = config.get('config', {}).get('layers', [])
                 for layer_config in layer_configs:
                     layer_class_name = layer_config.get('class_name')
-                    layer_params = layer_config.get('config', {})
+                    layer_params = layer_config.get('config', {}).copy()
                     
                     # Saltar InputLayer (se crea automáticamente)
                     if layer_class_name == 'InputLayer':
                         continue
                     
+                    # Normalizar parámetros que vienen como listas de un solo elemento
+                    def normalize_param(value):
+                        """Convierte listas de un elemento a valores únicos"""
+                        if isinstance(value, list) and len(value) == 1:
+                            return value[0]
+                        elif isinstance(value, list) and len(value) == 0:
+                            return None
+                        return value
+                    
+                    # Aplicar normalización a todos los parámetros
+                    for key in list(layer_params.keys()):
+                        layer_params[key] = normalize_param(layer_params[key])
+                    
+                    # Parámetros específicos que necesitan valores por defecto si son None
+                    if layer_params.get('axis') is None:
+                        layer_params['axis'] = -1
+                    
                     # Obtener la clase de capa correspondiente
                     layer_class = getattr(layers, layer_class_name, None)
                     if layer_class:
                         # Filtrar parámetros no soportados
+                        unsupported = ['time_major', 'batch_input_shape', 'dtype', 'module', 'registered_name']
                         supported_params = {k: v for k, v in layer_params.items() 
-                                          if k not in ['time_major', 'batch_input_shape', 'dtype']}
+                                          if k not in unsupported and v is not None}
                         try:
                             model.add(layer_class(**supported_params))
                         except Exception as layer_e:
                             print(f"⚠️ Error agregando capa {layer_class_name}: {layer_e}")
-                            # Intenta con parámetros mínimos
+                            # Intenta con parámetros mínimos esenciales
                             if layer_class_name == 'LSTM':
-                                model.add(layer_class(units=supported_params.get('units', 128)))
+                                model.add(layers.LSTM(units=supported_params.get('units', 128)))
+                            elif layer_class_name in ['Conv1D', 'Dense']:
+                                # Mantener solo los parámetros obligatorios
+                                essential = {k: v for k, v in supported_params.items() 
+                                           if k in ['units', 'filters', 'kernel_size']}
+                                model.add(layer_class(**essential))
                             else:
                                 raise
                 
