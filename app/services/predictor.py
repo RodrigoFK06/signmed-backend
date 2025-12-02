@@ -26,8 +26,64 @@ CLASSES_PATH = Path(MODELS_DIR) / "classes.json"
 MEAN_PATH    = Path(MODELS_DIR) / "mean_holistic.npy"
 STD_PATH     = Path(STD_PATH := MEAN_PATH.parent / "std_holistic.npy")  # mantener compat
 
+
+def load_model_safe(model_path: Path):
+    """Carga el modelo con manejo de parámetros deprecados de LSTM."""
+    import h5py
+    import json
+    
+    print(f"🔄 Cargando modelo desde {model_path}...")
+    
+    try:
+        # Intenta carga normal primero
+        return tf.keras.models.load_model(str(model_path))
+    except (ValueError, TypeError) as e:
+        if 'time_major' in str(e):
+            print(f"⚠️ Modelo con parámetros deprecados detectado. Aplicando corrección automática...")
+            
+            # Leer configuración del modelo desde HDF5
+            with h5py.File(model_path, 'r') as f:
+                model_config = f.attrs.get('model_config')
+                if not model_config:
+                    raise ValueError("No se pudo obtener la configuración del modelo")
+                
+                # Decodificar configuración
+                config_str = model_config.decode('utf-8') if isinstance(model_config, bytes) else model_config
+                config = json.loads(config_str)
+                
+                # Función recursiva para eliminar time_major
+                def remove_deprecated_params(obj):
+                    if isinstance(obj, dict):
+                        # Si es una capa LSTM, remover time_major
+                        if obj.get('class_name') == 'LSTM' and 'config' in obj:
+                            obj['config'].pop('time_major', None)
+                        # Recursión en todos los valores
+                        for value in obj.values():
+                            remove_deprecated_params(value)
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            remove_deprecated_params(item)
+                
+                # Limpiar configuración
+                remove_deprecated_params(config)
+                
+                # Reconstruir modelo desde configuración limpia
+                print("✅ Configuración limpiada. Reconstruyendo modelo...")
+                model = tf.keras.models.model_from_json(json.dumps(config))
+                
+                # Cargar pesos del archivo original
+                model.load_weights(str(model_path))
+                print("✅ Modelo cargado exitosamente con compatibilidad TensorFlow 2.19")
+                
+                return model
+        
+        # Si es otro error, re-lanzarlo
+        print(f"❌ Error al cargar modelo: {e}")
+        raise
+
+
 # --- Carga única al importar el módulo ---
-model = tf.keras.models.load_model(str(MODEL_PATH))
+model = load_model_safe(MODEL_PATH)
 encoder = joblib.load(str(ENCODER_PATH))
 classes = np.array(getattr(encoder, "classes_", []), dtype=object)  # np.array de strings
 
