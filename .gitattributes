@@ -1,10 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
-*.csv filter=lfs diff=lfs merge=lfs -text
-*.h5 filter=lfs diff=lfs merge=lfs -text
-*.pkl filter=lfs diff=lfs merge=lfs -text
-*.npy filter=lfs diff=lfs merge=lfs -text
-*.h5 !text !filter !merge !diff
-*.pkl !text !filter !merge !diff
-*.npy !text !filter !merge !diff
-*.csv !text !filter !merge !diff
+
+# Artefactos de modelo: binarios versionados directamente (sin Git LFS)
+*.h5  binary
+*.pkl binary
+*.npy binary
