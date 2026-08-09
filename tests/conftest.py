@@ -23,6 +23,20 @@ from mongomock_motor import AsyncMongoMockClient  # noqa: E402
 from app.db.mongodb import Collections, set_collections  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolated_uploads(tmp_path, monkeypatch):
+    """
+    Redirige las subidas a un directorio temporal.
+
+    Sin esto, los tests de `/upload-document` escriben en el `uploads/` real del
+    repositorio, que es justo como acabaron versionandose documentos de usuario.
+    """
+    from app.core.settings import settings
+
+    monkeypatch.setattr(settings, "upload_dir", tmp_path / "uploads")
+    yield
+
+
 @pytest.fixture
 def collections() -> Collections:
     """Colecciones respaldadas por una base de datos en memoria."""
