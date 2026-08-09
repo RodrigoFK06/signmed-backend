@@ -4,14 +4,16 @@ from typing import List
 import logging
 from fastapi import APIRouter, HTTPException, Path, Depends, Response
 
-from app.db.mongodb import collection
+from app.db.mongodb import get_collections
 from app.models.schema import DailyActivityRecord, DailyActivitySummary, DailyActivityResponse
-from app.services.auth import get_current_user  # JWT → dict con {nickname, email, role}
-
-# TODO: INDEXING - Consider an index on (nickname, timestamp) for optimal query performance in /activity/daily.
-# TODO: TESTS - Add unit tests for date parsing, date range generation (including timezone handling), and aggregation of daily activity stats (mocking MongoDB).
+from app.services.auth import get_current_user
 
 logger = logging.getLogger(__name__)
+
+# Roles que pueden consultar la actividad de otra persona. Antes solo se
+# contemplaba HEALTH_WORKER, de modo que un ADMIN recibia 403 en este endpoint
+# mientras que en /records y /progress si era el rol privilegiado.
+SUPERVISOR_ROLES = {"HEALTH_WORKER", "ADMIN"}
 router = APIRouter(tags=["User Activity"])
 
 @router.get(
@@ -25,8 +27,8 @@ router = APIRouter(tags=["User Activity"])
 )
 async def get_daily_activity(
     response: Response,
-    nickname: str = Path(..., description="User's nickname or 'me' para el usuario autenticado", example="usuario123"),
-    date_str: str = Path(..., description="Date in YYYY-MM-DD format", example="2023-10-28", regex=r"^\d{4}-\d{2}-\d{2}$"),
+    nickname: str = Path(..., description="User's nickname or 'me' para el usuario autenticado", examples=["usuario123"]),
+    date_str: str = Path(..., description="Date in YYYY-MM-DD format", examples=["2023-10-28"], pattern=r"^\d{4}-\d{2}-\d{2}$"),
     current_user: dict = Depends(get_current_user),
 ):
     """
@@ -47,9 +49,8 @@ async def get_daily_activity(
 
     target_nickname = auth_nick if nickname.lower() == "me" else nickname
 
-    if role != "HEALTH_WORKER" and target_nickname != auth_nick:
-        # Paciente intentando ver actividad de otro usuario
-        raise HTTPException(status_code=403, detail="Forbidden: you can only view your own activity.")
+    if role not in SUPERVISOR_ROLES and target_nickname != auth_nick:
+        raise HTTPException(status_code=403, detail="Solo puedes consultar tu propia actividad.")
 
     # --- 3) Rango de fecha (UTC) ---
     # MongoDB suele guardar en UTC; usamos el día completo en UTC
@@ -68,7 +69,7 @@ async def get_daily_activity(
     incorrect_practices = 0
 
     try:
-        cursor = collection.find(mongo_filter).sort("timestamp", 1)  # ascendente por hora
+        cursor = get_collections().predictions.find(mongo_filter).sort("timestamp", 1)
 
         async for doc in cursor:
             total_practices += 1

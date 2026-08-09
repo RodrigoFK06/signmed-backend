@@ -1,0 +1,49 @@
+{
+  "_comment": "Catalogo de senas servido por la API. Sustituye la lectura del dataset (135 MB) en tiempo de peticion. Regenerable con `python -m scripts.build_labels_catalog`.",
+  "version": 1,
+  "labels": [
+    {
+      "id": "dolor",
+      "name": "Dolor",
+      "difficulty": "beginner",
+      "description": "Sena basica para expresar dolor."
+    },
+    {
+      "id": "me_duele",
+      "name": "Me duele",
+      "difficulty": "beginner",
+      "description": "Indica que una parte del cuerpo duele."
+    },
+    {
+      "id": "yo",
+      "name": "Yo",
+      "difficulty": "beginner",
+      "description": "Pronombre de primera persona."
+    },
+    {
+      "id": "tengo_fiebre_y_mareo",
+      "name": "Tengo fiebre y mareo",
+      "difficulty": "intermediate",
+      "description": "Frase compuesta para describir fiebre acompanada de mareo."
+    },
+    {
+      "id": "tengo_resfriado_y_tos",
+      "name": "Tengo resfriado y tos",
+      "difficulty": "intermediate",
+      "description": "Frase compuesta para describir resfriado con tos."
+    },
+    {
+      "id": "que_medicamentos_toma",
+      "name": "Que medicamentos toma",
+      "difficulty": "advanced",
+      "description": "Pregunta clinica sobre medicacion actual del paciente."
+    },
+    {
+      "id": "tengo_fiebre_y_mareos",
+      "name": "Tengo fiebre y mareos",
+      "difficulty": "intermediate",
+      "deprecated": true,
+      "description": "Clase fantasma: variante en plural de 'tengo_fiebre_y_mareo' con solo 2 grabaciones etiquetadas por error. El modelo puede emitirla, pero no se ofrece para practicar. Se elimina al reentrenar con el dataset depurado."
+    }
+  ]
+}

@@ -23,19 +23,20 @@ import joblib  # <-- para guardar el encoder como pkl
 from app.utils.data_loader import load_dataset
 from app.utils.model_utils import save_model, save_encoder, plot_metrics
 from app.config import (
-    EPOCHS,
+    ARTIFACTS_DIR,
     BATCH_SIZE,
-    MODELS_DIR,
+    EPOCHS,
 )
 
 # --- CONFIGURACIÓN DEL NUEVO MODELO ---
-MODEL_PATH   = str(MODELS_DIR / "lstm_holistic.h5")
-ENCODER_PATH = str(MODELS_DIR / "label_encoder.pkl")
-CLASSES_PATH = str(MODELS_DIR / "classes.json")          # <-- NUEVO
-PLOT_PATH    = str(MODELS_DIR / "lstm_holistic_plot.png")
+MODELS_DIR   = ARTIFACTS_DIR
+MODEL_PATH   = str(ARTIFACTS_DIR / "lstm_holistic.h5")
+ENCODER_PATH = str(ARTIFACTS_DIR / "label_encoder.pkl")
+CLASSES_PATH = str(ARTIFACTS_DIR / "classes.json")
+PLOT_PATH    = str(ARTIFACTS_DIR / "lstm_holistic_plot.png")
 
-MEAN_PATH = str(MODELS_DIR / "mean_holistic.npy")
-STD_PATH  = str(MODELS_DIR / "std_holistic.npy")
+MEAN_PATH = str(ARTIFACTS_DIR / "mean_holistic.npy")
+STD_PATH  = str(ARTIFACTS_DIR / "std_holistic.npy")
 
 
 # --- CONSTRUCCIÓN DEL MODELO ---
@@ -98,15 +99,27 @@ def main():
     X_train, X_test, y_train, y_test, encoder = load_dataset()
 
     # --- Normalización ---
+    # BUG CORREGIDO: la version anterior calculaba y guardaba mean/std pero
+    # despues entrenaba con `X_train` en crudo, mientras que el servicio de
+    # inferencia si estandarizaba la entrada. El modelo recibia en produccion una
+    # distribucion que nunca habia visto (train/serve skew). Ahora la
+    # estandarizacion se aplica aqui, de modo que entrenamiento e inferencia usan
+    # exactamente la misma transformacion.
     mean = np.mean(X_train, axis=(0, 1))
     std = np.std(X_train, axis=(0, 1))
-    # defensa: evitar divisiones por cero si alguna feature es constante
-    std[std == 0] = 1.0
+    std[std == 0] = 1.0  # evita dividir por cero en features constantes
 
     os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
     np.save(MEAN_PATH, mean)
     np.save(STD_PATH, std)
     print(f"💾 mean/std guardados en:\n  {MEAN_PATH}\n  {STD_PATH}")
+
+    # Las estadisticas se calculan solo sobre train y se aplican tambien a test,
+    # para no filtrar informacion del conjunto de evaluacion.
+    X_train = (X_train - mean) / std
+    X_test = (X_test - mean) / std
+    print("✅ Features estandarizadas con las estadisticas de entrenamiento.")
+    print("   Recuerda desplegar con APPLY_FEATURE_NORMALIZATION=true.")
 
     print("\n🔍 Validación rápida del dataset:")
     print(f"➡️ Clases detectadas: {encoder.classes_}")

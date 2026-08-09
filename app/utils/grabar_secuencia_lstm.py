@@ -1,10 +1,15 @@
-# app/utils/grabar_secuencia_holistic.py
+"""
+Grabador de secuencias para ampliar el dataset.
+
+El vector de cada frame lo construye `app.utils.feature_extraction`, que
+documenta y corrige el recorte que dejaba las manos fuera del dataset original.
+"""
 import cv2
 import time
 import os
 import numpy as np
 from app.utils.holistic_tracking import HolisticTracker
-from app.utils.data_processing import DataProcessor
+from app.utils.feature_extraction import FEATURES_PER_FRAME, build_frame_vector, has_hands
 from app.config import DATASET_PATH
 
 # --- CONFIGURACIÓN GENERAL ---
@@ -13,13 +18,11 @@ FPS = 10
 FRAMES_TOTAL = int(SEQUENCE_DURATION * FPS)    # 40
 FRAMES_TO_SKIP = 5                             # descartar primeros 5
 FRAMES_TO_SAVE = FRAMES_TOTAL - FRAMES_TO_SKIP # 35
-FACE_SAMPLE_STEP = 10                          # muestrear cada 10 puntos faciales
-LANDMARKS_PER_FRAME = 150                      # ajustado a nueva densidad
+LANDMARKS_PER_FRAME = FEATURES_PER_FRAME       # 150
 BOX_WIDTH = 560
 BOX_HEIGHT = 480
 
 tracker = HolisticTracker()
-processor = DataProcessor()
 CSV_PATH = str(DATASET_PATH)
 
 # --- FUNCIONES AUXILIARES ---
@@ -108,37 +111,17 @@ while cap.isOpened():
 
     elif recording:
         if len(buffer_sequence) < FRAMES_TOTAL:
-            frame_vector = []
+            frame_vector = build_frame_vector(results)
 
-            # --- CUERPO (33 puntos) ---
-            if results.pose_landmarks:
-                for lm in results.pose_landmarks.landmark:
-                    frame_vector.extend([lm.x, lm.y])
-
-            # --- CARA (muestra cada 10 puntos aprox. de los 468) ---
-            if results.face_landmarks:
-                for lm in results.face_landmarks.landmark[::FACE_SAMPLE_STEP]:
-                    frame_vector.extend([lm.x, lm.y])
-
-            # --- MANOS (42 puntos total) ---
-            for hand_landmarks in [results.left_hand_landmarks, results.right_hand_landmarks]:
-                if hand_landmarks:
-                    for lm in hand_landmarks.landmark:
-                        frame_vector.extend([lm.x, lm.y])
-
-            # --- AJUSTE LONGITUD ---
-            if len(frame_vector) < LANDMARKS_PER_FRAME:
-                frame_vector += [0.0] * (LANDMARKS_PER_FRAME - len(frame_vector))
-            frame_vector = frame_vector[:LANDMARKS_PER_FRAME]
-            frame_vector = np.array(frame_vector, dtype=np.float32)
-
-            var = float(np.var(frame_vector))
-            if var > 1e-4:
-                buffer_sequence.append(frame_vector.tolist())
-                print(f"✅ Frame {len(buffer_sequence)}/{FRAMES_TOTAL} (varianza: {var:.5f})")
-            else:
-                print(f"❌ Frame descartado: varianza demasiado baja ({var:.5f})")
+            # Un frame sin manos no aporta informacion sobre la sena: antes solo
+            # se comprobaba la varianza global, que la pose y la cara mantenian
+            # alta aunque no se hubiera detectado ninguna mano.
+            if not has_hands(frame_vector):
+                print("❌ Frame descartado: no se detectaron manos")
                 frames_descartados += 1
+            else:
+                buffer_sequence.append(frame_vector)
+                print(f"✅ Frame {len(buffer_sequence)}/{FRAMES_TOTAL}")
 
             cv2.putText(frame, f"Grabando {len(buffer_sequence)}/{FRAMES_TOTAL}", (10, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)

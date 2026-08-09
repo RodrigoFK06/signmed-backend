@@ -1,7 +1,7 @@
 """
 Esquemas de datos para exámenes.
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional
 from datetime import datetime
 from enum import Enum
@@ -26,14 +26,13 @@ class MultipleChoiceQuestion(BaseModel):
     correct_label: str = Field(..., description="Label correcto (seña registrada)")
     options: List[str] = Field(..., description="Lista de opciones de respuesta (incluye la correcta)")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "question_text": "¿Qué seña es esta?",
                 "correct_label": "hola",
                 "options": ["hola", "gracias", "adios", "por_favor"]
             }
-        }
+        })
 
 
 class SignPracticeQuestion(BaseModel):
@@ -43,15 +42,14 @@ class SignPracticeQuestion(BaseModel):
     min_confidence: float = Field(default=60.0, description="Confianza mínima requerida")
     max_attempts: int = Field(default=3, description="Número máximo de intentos")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "question_text": "Realiza la siguiente seña",
                 "label_to_practice": "hola",
                 "min_confidence": 60.0,
                 "max_attempts": 3
             }
-        }
+        })
 
 
 class ExamQuestion(BaseModel):
@@ -61,8 +59,7 @@ class ExamQuestion(BaseModel):
     sign_practice: Optional[SignPracticeQuestion] = None
     order: int = Field(..., description="Orden de la pregunta en el examen")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "question_type": "multiple_choice",
                 "multiple_choice": {
@@ -72,7 +69,7 @@ class ExamQuestion(BaseModel):
                 },
                 "order": 1
             }
-        }
+        })
 
 
 class ExamCreate(BaseModel):
@@ -80,12 +77,11 @@ class ExamCreate(BaseModel):
     title: str = Field(..., min_length=3, max_length=200, description="Título del examen")
     description: Optional[str] = Field(None, max_length=1000, description="Descripción del examen")
     difficulty: ExamDifficulty = Field(..., description="Nivel de dificultad del examen")
-    questions: List[ExamQuestion] = Field(..., min_items=1, description="Lista de preguntas")
+    questions: List[ExamQuestion] = Field(..., min_length=1, description="Lista de preguntas")
     passing_score: float = Field(default=60.0, ge=0, le=100, description="Puntuación mínima para aprobar")
     time_limit_minutes: Optional[int] = Field(None, gt=0, description="Límite de tiempo en minutos (opcional)")
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "title": "Examen de Señas Básicas",
                 "description": "Evaluación de conocimientos básicos de lengua de señas",
@@ -112,7 +108,7 @@ class ExamCreate(BaseModel):
                 "passing_score": 60.0,
                 "time_limit_minutes": 30
             }
-        }
+        })
 
 
 class ExamResponse(BaseModel):
@@ -129,8 +125,7 @@ class ExamResponse(BaseModel):
     updated_at: datetime
     is_active: bool = True
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "id": "507f1f77bcf86cd799439011",
                 "title": "Examen de Señas Básicas",
@@ -143,7 +138,7 @@ class ExamResponse(BaseModel):
                 "updated_at": "2024-01-15T10:30:00Z",
                 "is_active": True
             }
-        }
+        })
 
 
 class ExamAttemptAnswer(BaseModel):
@@ -155,26 +150,29 @@ class ExamAttemptAnswer(BaseModel):
     confidence: Optional[float] = None  # Para sign practice
     is_correct: bool
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "question_order": 1,
                 "question_type": "multiple_choice",
                 "selected_option": "hola",
                 "is_correct": True
             }
-        }
+        })
 
 
 class ExamAttemptCreate(BaseModel):
     """Modelo para registrar un intento de examen."""
     exam_id: str
     answers: List[ExamAttemptAnswer]
-    
-    class Config:
-        json_schema_extra = {
+    started_at: Optional[datetime] = Field(
+        default=None,
+        description="Momento en que el usuario abrio el examen. Permite calcular la duracion real.",
+    )
+
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "exam_id": "507f1f77bcf86cd799439011",
+                "started_at": "2024-01-15T14:00:00Z",
                 "answers": [
                     {
                         "question_order": 1,
@@ -184,32 +182,42 @@ class ExamAttemptCreate(BaseModel):
                     }
                 ]
             }
-        }
+        })
 
 
 class ExamAttemptResponse(BaseModel):
-    """Modelo de respuesta de intento de examen."""
+    """
+    Resultado de un intento.
+
+    `score` es el numero de aciertos y `percentage` el porcentaje. Antes existia
+    un unico campo `score`, documentado como porcentaje pero relleno con el
+    conteo, y el frontend lo interpretaba de las dos formas segun la pantalla.
+    """
     id: str
     exam_id: str
     user_id: str
     answers: List[ExamAttemptAnswer]
-    score: float  # Porcentaje de respuestas correctas
+    score: int = Field(..., description="Numero de respuestas correctas.")
+    percentage: float = Field(..., description="Porcentaje de aciertos (0-100).")
     passed: bool
     started_at: datetime
     completed_at: datetime
-    time_taken_minutes: float
-    
-    class Config:
-        json_schema_extra = {
+    time_taken_minutes: Optional[float] = Field(
+        default=None,
+        description="Duracion en minutos. None si el cliente no envio started_at.",
+    )
+
+    model_config = ConfigDict(json_schema_extra={
             "example": {
                 "id": "507f1f77bcf86cd799439012",
                 "exam_id": "507f1f77bcf86cd799439011",
                 "user_id": "507f191e810c19729de860ea",
                 "answers": [],
-                "score": 75.0,
+                "score": 3,
+                "percentage": 75.0,
                 "passed": True,
                 "started_at": "2024-01-15T14:00:00Z",
                 "completed_at": "2024-01-15T14:25:00Z",
                 "time_taken_minutes": 25.0
             }
-        }
+        })

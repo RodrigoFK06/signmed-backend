@@ -1,27 +1,37 @@
-from pathlib import Path
+"""
+Rutas y parametros de los scripts de entrenamiento.
 
-# Base directories
-BASE_DIR = Path(__file__).parent.parent
-DATA_DIR = BASE_DIR / "data"
-MODELS_DIR = BASE_DIR / "app" / "models"
+La configuracion del servicio vive en `app.core.settings`. Este modulo solo
+expone lo que necesitan los scripts offline (entrenamiento, grabacion de
+secuencias, analisis), que si pueden leer el dataset completo.
+"""
+from app.core.settings import settings
 
-# Dataset and model paths
-DATASET_PATH = DATA_DIR / "dataset_medico.csv"
-LSTM_MODEL_PATH = MODELS_DIR / "lstm_model.h5"
-CNN_LSTM_MODEL_PATH = MODELS_DIR / "cnn_lstm_model.h5"
-ENCODER_PATH = MODELS_DIR / "label_encoder.pkl"
+BASE_DIR = settings.artifacts_dir.parent
+DATA_DIR = settings.data_dir
+ARTIFACTS_DIR = settings.artifacts_dir
 
-# Training parameters
-EPOCHS = 25
-BATCH_SIZE = 8
-DATA_PATH = str(DATASET_PATH)  # For backward compatibility
+DATASET_PATH = settings.dataset_path
+
+MODEL_PATH = settings.model_path
+ENCODER_PATH = settings.encoder_path
+CLASSES_PATH = settings.classes_path
+MEAN_PATH = ARTIFACTS_DIR / "mean_holistic.npy"
+STD_PATH = ARTIFACTS_DIR / "std_holistic.npy"
+
+# Estructura de una secuencia: 35 frames x 150 features.
+FRAMES = settings.sequence_frames
+FEATURES_PER_FRAME = settings.sequence_features
+
+# Hiperparametros de entrenamiento.
+EPOCHS = 60
+BATCH_SIZE = 32
 TEST_SIZE = 0.2
 RANDOM_STATE = 42
+MIN_SAMPLES_PER_CLASS = 10
 
-# Plot and metrics output paths
-LSTM_PLOT_PATH = MODELS_DIR / "loss_plot_lstm.png"
-CNN_LSTM_PLOT_PATH = MODELS_DIR / "loss_plot_cnn_lstm.png"
-METRICS_JSON_PATH = MODELS_DIR / "metrics.json"
-CONFUSION_MATRIX_PATH = MODELS_DIR / "confusion_matrix.png"
-REPORT_PATH = MODELS_DIR / "classification_report.txt"
-INFERENCE_LOG_PATH = MODELS_DIR / "inference_log.csv"
+# Salidas de la evaluacion.
+PLOT_PATH = ARTIFACTS_DIR / "lstm_holistic_plot.png"
+METRICS_JSON_PATH = ARTIFACTS_DIR / "metrics.json"
+CONFUSION_MATRIX_PATH = ARTIFACTS_DIR / "confusion_matrix_holistic.png"
+REPORT_PATH = ARTIFACTS_DIR / "classification_report_holistic.txt"

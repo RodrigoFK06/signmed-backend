@@ -1,22 +1,37 @@
-import os
-from datetime import datetime, timedelta
+"""
+Autenticacion basada en JWT.
+
+`SECRET_KEY` ya no tiene un valor por defecto que funcione en produccion: antes
+era `"dev_secret_change_me"`, publicado en el repositorio, de modo que cualquiera
+podia firmar un token valido para cualquier usuario si la variable de entorno no
+estaba definida. `app.core.settings` falla al arrancar si eso ocurre fuera de
+desarrollo.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from jose import jwt, JWTError
-from passlib.context import CryptContext
+from bson import ObjectId
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from bson import ObjectId
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
-from app.db.mongodb import users_collection
-from app.models.schema import TokenData, UserRole  # 👈 incluye tipos con role
+from app.core.settings import settings
+from app.db.mongodb import get_collections
 
-SECRET_KEY = os.getenv("SECRET_KEY", "dev_secret_change_me")
-ALGORITHM = os.getenv("ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+logger = logging.getLogger(__name__)
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+CREDENTIALS_EXCEPTION = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="No autenticado",
+    headers={"WWW-Authenticate": "Bearer"},
+)
 
 
 def hash_password(password: str) -> str:
@@ -24,21 +39,26 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(plain: str, hashed: str) -> bool:
+    if not hashed:
+        # Sin hash almacenado no hay nada que verificar, pero se gasta el mismo
+        # tiempo que en un fallo normal para no filtrar si el email existe.
+        pwd_context.dummy_verify()
+        return False
     return pwd_context.verify(plain, hashed)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    """
-    Espera en `data` al menos: sub, email, nickname y role (UserRole).
-    """
+    """Firma un token. `data` debe incluir al menos `sub`, `email`, `nickname` y `role`."""
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    expire = datetime.now(tz=timezone.utc) + (
+        expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
+    )
+    to_encode["exp"] = expire
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 
 
 async def get_user_by_email(email: str) -> Optional[dict]:
-    return await users_collection.find_one({"email": email})
+    return await get_collections().users.find_one({"email": email.lower()})
 
 
 async def get_user_by_id(user_id: str) -> Optional[dict]:
@@ -46,30 +66,33 @@ async def get_user_by_id(user_id: str) -> Optional[dict]:
         oid = ObjectId(user_id)
     except Exception:
         return None
-    return await users_collection.find_one({"_id": oid})
+    return await get_collections().users.find_one({"_id": oid})
 
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
-    credentials_exc = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="No autenticado",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        role: Optional[UserRole] = payload.get("role") or "PATIENT"  # 👈 fallback seguro
-        if user_id is None:
-            raise credentials_exc
-        token_data = TokenData(user_id=user_id, role=role)
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
     except JWTError:
-        raise credentials_exc
+        raise CREDENTIALS_EXCEPTION
 
-    user = await get_user_by_id(token_data.user_id)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise CREDENTIALS_EXCEPTION
+
+    user = await get_user_by_id(user_id)
     if not user:
-        raise credentials_exc
+        raise CREDENTIALS_EXCEPTION
 
-    # Normaliza el documento para consumo y asegura role
+    # El rol se toma siempre del documento en base de datos, nunca del token: si
+    # un administrador degrada a un usuario, su JWT vigente no debe conservar
+    # los permisos antiguos.
+    if user.get("status") in {"pending", "rejected"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="La cuenta no esta activa.",
+        )
+
     user["id"] = str(user["_id"])
-    user["role"] = user.get("role", token_data.role or "PATIENT")  # 👈 garantiza role presente
+    user.setdefault("role", "PATIENT")
+    user.pop("password_hash", None)
     return user

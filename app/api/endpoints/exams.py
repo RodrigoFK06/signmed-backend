@@ -6,7 +6,7 @@ Todos los usuarios autenticados pueden ver y realizar exámenes.
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Optional
 from bson import ObjectId
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 from app.models.exam_schema import (
@@ -16,11 +16,68 @@ from app.models.exam_schema import (
     ExamAttemptResponse,
     QuestionType
 )
-from app.db.mongodb import exams_collection, exam_attempts_collection
+from app.db.mongodb import get_collections
 from app.services.authorize import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/exams", tags=["Exams"])
+
+
+def _now() -> datetime:
+    return datetime.now(tz=timezone.utc)
+
+
+def _require_admin(current_user: dict, action: str) -> str:
+    """Comprueba el rol y devuelve el id del administrador."""
+    if current_user.get("role") != "ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Solo los administradores pueden {action} examenes",
+        )
+    return str(current_user.get("_id", ""))
+
+
+def _parse_exam_id(exam_id: str) -> ObjectId:
+    try:
+        return ObjectId(exam_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"ID de examen invalido: {exam_id}",
+        ) from exc
+
+
+def _validate_questions(exam: ExamCreate) -> None:
+    """Valida coherencia entre el tipo de pregunta y su contenido."""
+    seen_orders: set[int] = set()
+
+    for question in exam.questions:
+        if question.order in seen_orders:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Hay dos preguntas con el mismo orden ({question.order}).",
+            )
+        seen_orders.add(question.order)
+
+        if question.question_type == QuestionType.MULTIPLE_CHOICE:
+            if not question.multiple_choice:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Pregunta {question.order}: falta el contenido de opcion multiple",
+                )
+            if question.multiple_choice.correct_label not in question.multiple_choice.options:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        f"Pregunta {question.order}: la respuesta correcta "
+                        f"'{question.multiple_choice.correct_label}' debe estar entre las opciones"
+                    ),
+                )
+        elif question.question_type == QuestionType.SIGN_PRACTICE and not question.sign_practice:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Pregunta {question.order}: falta el contenido de practica de senas",
+            )
 
 
 def exam_doc_to_response(doc: dict) -> dict:
@@ -38,10 +95,17 @@ def attempt_doc_to_response(doc: dict) -> dict:
     doc["id"] = str(doc.pop("_id"))
     doc["exam_id"] = str(doc["exam_id"])
     doc["user_id"] = str(doc["user_id"])
-    if "started_at" in doc and isinstance(doc["started_at"], datetime):
-        doc["started_at"] = doc["started_at"].isoformat()
-    if "completed_at" in doc and isinstance(doc["completed_at"], datetime):
-        doc["completed_at"] = doc["completed_at"].isoformat()
+    for field in ("started_at", "completed_at"):
+        if isinstance(doc.get(field), datetime):
+            doc[field] = doc[field].isoformat()
+
+    # Los intentos anteriores a la separacion score/percentage solo guardaban el
+    # conteo de aciertos; se deriva el porcentaje para no romper la respuesta.
+    if "percentage" not in doc:
+        answered = len(doc.get("answers", []))
+        score = doc.get("score", 0)
+        doc["percentage"] = round(score / answered * 100, 2) if answered else 0.0
+
     return doc
 
 
@@ -50,44 +114,11 @@ async def create_exam(
     exam: ExamCreate,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Crear un nuevo examen.
-    Solo administradores pueden crear exámenes.
-    """
-    # Verificar que sea administrador
-    role = current_user.get("role", "")
-    if role != "ADMIN":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo los administradores pueden crear exámenes"
-        )
-    
-    user_id = str(current_user.get("_id", ""))
-    
-    # Validar que las preguntas tengan el contenido correcto según su tipo
-    for q in exam.questions:
-        if q.question_type == QuestionType.MULTIPLE_CHOICE:
-            if not q.multiple_choice:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Pregunta {q.order}: Falta contenido de opción múltiple"
-                )
-            # Validar que la respuesta correcta esté en las opciones
-            if q.multiple_choice.correct_label not in q.multiple_choice.options:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Pregunta {q.order}: La respuesta correcta '{q.multiple_choice.correct_label}' debe estar en las opciones"
-                )
-        
-        elif q.question_type == QuestionType.SIGN_PRACTICE:
-            if not q.sign_practice:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Pregunta {q.order}: Falta contenido de práctica de señas"
-                )
-    
-    # Crear documento de examen
-    now = datetime.utcnow()
+    """Crear un nuevo examen. Solo administradores."""
+    user_id = _require_admin(current_user, "crear")
+    _validate_questions(exam)
+
+    now = _now()
     exam_doc = {
         "title": exam.title,
         "description": exam.description,
@@ -101,11 +132,10 @@ async def create_exam(
         "is_active": True
     }
     
-    result = await exams_collection.insert_one(exam_doc)
+    result = await get_collections().exams.insert_one(exam_doc)
     exam_doc["_id"] = result.inserted_id
-    
-    logger.info(f"✅ Examen creado: {exam.title} por admin {user_id}")
-    
+
+    logger.info("Examen creado: %s por el administrador %s", exam.title, user_id)
     return exam_doc_to_response(exam_doc)
 
 
@@ -128,9 +158,9 @@ async def list_exams(
         query["difficulty"] = difficulty
     
     exams = []
-    async for doc in exams_collection.find(query).sort("created_at", -1):
+    async for doc in get_collections().exams.find(query).sort("created_at", -1):
         exams.append(exam_doc_to_response(doc))
-    
+
     return exams
 
 
@@ -142,14 +172,8 @@ async def get_exam(
     """
     Obtener detalles de un examen específico.
     """
-    try:
-        exam = await exams_collection.find_one({"_id": ObjectId(exam_id)})
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"ID de examen inválido: {exam_id}"
-        )
-    
+    exam = await get_collections().exams.find_one({"_id": _parse_exam_id(exam_id)})
+
     if not exam:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -169,43 +193,10 @@ async def update_exam(
     Actualizar un examen existente.
     Solo administradores pueden editar exámenes.
     """
-    # Verificar que sea administrador
-    role = current_user.get("role", "")
-    if role != "ADMIN":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo los administradores pueden editar exámenes"
-        )
-    
-    try:
-        exam_oid = ObjectId(exam_id)
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"ID de examen inválido: {exam_id}"
-        )
-    
-    # Validar preguntas igual que en create
-    for q in exam.questions:
-        if q.question_type == QuestionType.MULTIPLE_CHOICE:
-            if not q.multiple_choice:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Pregunta {q.order}: Falta contenido de opción múltiple"
-                )
-            if q.multiple_choice.correct_label not in q.multiple_choice.options:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Pregunta {q.order}: La respuesta correcta debe estar en las opciones"
-                )
-        elif q.question_type == QuestionType.SIGN_PRACTICE:
-            if not q.sign_practice:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Pregunta {q.order}: Falta contenido de práctica de señas"
-                )
-    
-    # Actualizar documento
+    _require_admin(current_user, "editar")
+    exam_oid = _parse_exam_id(exam_id)
+    _validate_questions(exam)
+
     update_doc = {
         "title": exam.title,
         "description": exam.description,
@@ -213,14 +204,14 @@ async def update_exam(
         "questions": [q.model_dump() for q in exam.questions],
         "passing_score": exam.passing_score,
         "time_limit_minutes": exam.time_limit_minutes,
-        "updated_at": datetime.utcnow()
+        "updated_at": _now(),
     }
-    
-    result = await exams_collection.update_one(
+
+    result = await get_collections().exams.update_one(
         {"_id": exam_oid},
         {"$set": update_doc}
     )
-    
+
     if result.matched_count == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -242,35 +233,22 @@ async def delete_exam(
     Eliminar (desactivar) un examen.
     Solo administradores pueden eliminar exámenes.
     """
-    # Verificar que sea administrador
-    role = current_user.get("role", "")
-    if role != "ADMIN":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo los administradores pueden eliminar exámenes"
-        )
-    
-    try:
-        exam_oid = ObjectId(exam_id)
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"ID de examen inválido: {exam_id}"
-        )
-    
-    # Soft delete - solo marcar como inactivo
-    result = await exams_collection.update_one(
+    _require_admin(current_user, "eliminar")
+    exam_oid = _parse_exam_id(exam_id)
+
+    # Borrado logico: los intentos historicos deben seguir apuntando al examen.
+    result = await get_collections().exams.update_one(
         {"_id": exam_oid},
-        {"$set": {"is_active": False, "updated_at": datetime.utcnow()}}
+        {"$set": {"is_active": False, "updated_at": _now()}}
     )
-    
+
     if result.matched_count == 0:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Examen no encontrado"
         )
-    
-    logger.info(f"🗑️ Examen desactivado: {exam_id}")
+
+    logger.info("Examen desactivado: %s", exam_id)
 
 
 @router.post("/{exam_id}/attempts", response_model=ExamAttemptResponse, status_code=status.HTTP_201_CREATED)
@@ -283,16 +261,10 @@ async def submit_exam_attempt(
     Registrar un intento de examen completado.
     """
     user_id = str(current_user.get("_id", ""))
-    
-    # Verificar que el examen existe
-    try:
-        exam = await exams_collection.find_one({"_id": ObjectId(exam_id), "is_active": True})
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"ID de examen inválido: {exam_id}"
-        )
-    
+    collections = get_collections()
+
+    exam = await collections.exams.find_one({"_id": _parse_exam_id(exam_id), "is_active": True})
+
     if not exam:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -338,29 +310,37 @@ async def submit_exam_attempt(
     score = correct_answers
     percentage = (correct_answers / total_questions * 100) if total_questions > 0 else 0
     passed = percentage >= exam["passing_score"]
-    
-    # Calcular tiempo tomado
-    now = datetime.utcnow()
-    # Asumimos que started_at se envía desde el frontend, sino usar now - time_limit
-    started_at = now  # Esto debería venir del frontend
-    time_taken = 0.0  # Esto debería calcularse en el frontend
-    
-    # Crear documento de intento
+
+    # El inicio lo marca el cliente al abrir el examen. Antes se fijaba
+    # `started_at = now` y `time_taken = 0.0` con un comentario de "esto deberia
+    # venir del frontend", asi que todos los intentos se guardaban con duracion
+    # cero. Si el cliente no lo envia, se deja en None en lugar de inventarlo.
+    now = _now()
+    started_at = attempt.started_at
+    if started_at is not None and started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+
+    time_taken = round((now - started_at).total_seconds() / 60, 2) if started_at else None
+
     attempt_doc = {
         "exam_id": ObjectId(exam_id),
         "user_id": ObjectId(user_id),
         "answers": [a.model_dump() for a in attempt.answers],
         "score": score,
+        "percentage": round(percentage, 2),
         "passed": passed,
-        "started_at": started_at,
+        "started_at": started_at or now,
         "completed_at": now,
-        "time_taken_minutes": time_taken
+        "time_taken_minutes": time_taken,
     }
-    
-    result = await exam_attempts_collection.insert_one(attempt_doc)
+
+    result = await collections.exam_attempts.insert_one(attempt_doc)
     attempt_doc["_id"] = result.inserted_id
-    
-    logger.info(f"📝 Intento de examen registrado: usuario {user_id}, examen {exam_id}, puntuación {percentage:.1f}% ({correct_answers}/{total_questions})")
+
+    logger.info(
+        "Intento registrado: usuario=%s examen=%s puntuacion=%.1f%% (%d/%d)",
+        user_id, exam_id, percentage, correct_answers, total_questions,
+    )
     
     return attempt_doc_to_response(attempt_doc)
 
@@ -375,59 +355,53 @@ async def list_exam_attempts(
     Usuarios normales solo ven sus propios intentos.
     Administradores ven todos los intentos.
     """
-    from app.db.mongodb import users_collection
-    
+    collections = get_collections()
     user_id = str(current_user.get("_id", ""))
     role = current_user.get("role", "")
-    
-    try:
-        exam_oid = ObjectId(exam_id)
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"ID de examen inválido: {exam_id}"
-        )
-    
-    query = {"exam_id": exam_oid}
-    
-    # Si no es admin, solo mostrar sus intentos
+    exam_oid = _parse_exam_id(exam_id)
+
+    query: dict = {"exam_id": exam_oid}
     if role != "ADMIN":
         query["user_id"] = ObjectId(user_id)
-    
-    attempts_with_users = []
-    async for attempt_doc in exam_attempts_collection.find(query).sort("completed_at", -1):
-        attempt_user_id = attempt_doc.get("user_id")
-        
-        # Intentar buscar por ObjectId
-        user = await users_collection.find_one({"_id": attempt_user_id})
-        
-        # Si no encuentra, intentar convertir a string y buscar
-        if not user and isinstance(attempt_user_id, ObjectId):
-            user = await users_collection.find_one({"_id": str(attempt_user_id)})
-        
-        # Si aún no encuentra, intentar convertir string a ObjectId y buscar
-        if not user and isinstance(attempt_user_id, str):
-            try:
-                user = await users_collection.find_one({"_id": ObjectId(attempt_user_id)})
-            except:
-                pass
-        
-        # Log para depuración
-        if not user:
-            logger.warning(f"⚠️ Usuario no encontrado para user_id: {attempt_user_id} (tipo: {type(attempt_user_id)})")
-        else:
-            logger.info(f"✅ Usuario encontrado: {user.get('nickname')} para user_id: {attempt_user_id}")
-        
-        attempt_data = attempt_doc_to_response(attempt_doc.copy())
-        attempt_data["user_info"] = {
-            "nickname": user.get("nickname", "Usuario desconocido") if user else "Usuario desconocido",
-            "email": user.get("email", "N/A") if user else "N/A",
-            "role": user.get("role", "") if user else ""
+
+    attempts = [doc async for doc in collections.exam_attempts.find(query).sort("completed_at", -1)]
+
+    # Una sola consulta para todos los autores en lugar de una (o tres) por
+    # intento. Los documentos antiguos guardaban `user_id` como cadena, asi que
+    # se buscan ambas representaciones a la vez.
+    raw_ids = {doc.get("user_id") for doc in attempts if doc.get("user_id") is not None}
+    lookup_ids: set = set()
+    for raw_id in raw_ids:
+        lookup_ids.add(raw_id)
+        try:
+            lookup_ids.add(ObjectId(raw_id) if isinstance(raw_id, str) else str(raw_id))
+        except Exception:
+            pass
+
+    users_by_id: dict = {}
+    if lookup_ids:
+        async for user in collections.users.find(
+            {"_id": {"$in": list(lookup_ids)}},
+            {"nickname": 1, "email": 1, "role": 1},
+        ):
+            users_by_id[str(user["_id"])] = user
+
+    unknown = {"nickname": "Usuario desconocido", "email": "N/A", "role": ""}
+    results = []
+    for doc in attempts:
+        user = users_by_id.get(str(doc.get("user_id")))
+        if user is None:
+            logger.warning("Intento %s sin usuario asociado (user_id=%r)", doc.get("_id"), doc.get("user_id"))
+
+        data = attempt_doc_to_response(doc.copy())
+        data["user_info"] = {
+            "nickname": user.get("nickname", unknown["nickname"]) if user else unknown["nickname"],
+            "email": user.get("email", unknown["email"]) if user else unknown["email"],
+            "role": user.get("role", unknown["role"]) if user else unknown["role"],
         }
-        
-        attempts_with_users.append(attempt_data)
-    
-    return attempts_with_users
+        results.append(data)
+
+    return results
 
 
 @router.get("/attempts/my-attempts", response_model=List[ExamAttemptResponse])
@@ -438,9 +412,11 @@ async def list_my_attempts(
     Listar todos los intentos del usuario actual.
     """
     user_id = str(current_user.get("_id", ""))
-    
+
     attempts = []
-    async for doc in exam_attempts_collection.find({"user_id": ObjectId(user_id)}).sort("completed_at", -1):
+    async for doc in get_collections().exam_attempts.find(
+        {"user_id": ObjectId(user_id)}
+    ).sort("completed_at", -1):
         attempts.append(attempt_doc_to_response(doc))
-    
+
     return attempts

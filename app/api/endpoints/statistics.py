@@ -1,20 +1,21 @@
-from fastapi import APIRouter, HTTPException
-from app.db.mongodb import collection
+from fastapi import APIRouter, Depends, HTTPException
+from app.db.mongodb import get_collections
 from app.models.schema import GlobalResultDistributionItem, GlobalResultsDistributionResponse
+from app.services.auth import get_current_user
 from typing import List
 import logging
 
-# TODO: INDEXING - Consider an index on (evaluation) if the collection is very large, to optimize the /stats/global_distribution aggregation.
-# TODO: TESTS - Add unit tests for the global distribution aggregation logic (mocking MongoDB responses and testing percentage calculations).
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Statistics"])
 
 @router.get("/stats/global_distribution",
             response_model=GlobalResultsDistributionResponse,
             summary="Get global distribution of prediction results",
-            description="Provides a distribution of all prediction evaluations (e.g., CORRECTO, DUDOSO, INCORRECTO) across the entire system."
+            description="Distribucion global de evaluaciones (CORRECTO, DUDOSO, INCORRECTO) en todo el sistema."
             )
-async def get_global_distribution():
+async def get_global_distribution(current_user: dict = Depends(get_current_user)):
+    # Requiere sesion: antes era publico y exponia el volumen de uso del sistema.
+    collection = get_collections().predictions
     try:
         # Assuming 'evaluation' field is always present on relevant records.
         # If not, a $match stage would be: {"$match": {"evaluation": {"$exists": True, "$ne": None}}}

@@ -1,15 +1,13 @@
-# TODO: INDEXING - Consider compound indexes on (nickname, timestamp), (evaluation, timestamp) and (timestamp) for optimal query performance in /records.
-# TODO: TESTS - Add unit tests for filter construction logic and pagination (mocking MongoDB).
-
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Response, Depends
 
-from app.db.mongodb import collection
-# ⬇️ JWT → dict con al menos {nickname, email, role}
+from app.db.mongodb import get_collections
 from app.services.auth import get_current_user
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 @router.get("/records", tags=["Registros"])
@@ -18,7 +16,7 @@ async def get_records(
     user_id: Optional[str] = Query(None, description="Filter by user ID (solo ADMIN)"),
     date_from: Optional[datetime] = Query(None, description="Filter records from this date (ISO). Ej: 2023-01-01T00:00:00Z"),
     date_to: Optional[datetime] = Query(None, description="Filter records up to this date (ISO). Ej: 2023-01-31T23:59:59Z"),
-    evaluation: Optional[str] = Query(None, description="Filter by evaluation type: CORRECTO, DUDOSO, INCORRECTO", regex="^(CORRECTO|DUDOSO|INCORRECTO)$"),
+    evaluation: Optional[str] = Query(None, description="Filter by evaluation type: CORRECTO, DUDOSO, INCORRECTO", pattern="^(CORRECTO|DUDOSO|INCORRECTO)$"),
     skip: int = Query(0, ge=0, description="Number of records to skip for pagination"),
     limit: int = Query(10, ge=1, le=100, description="Maximum number of records to return per page"),
     current_user: dict = Depends(get_current_user),
@@ -30,6 +28,7 @@ async def get_records(
     - PATIENT: sólo ve sus propios registros (forzado a su user_id del JWT).
     - ADMIN: puede ver global o filtrar por ?user_id=...
     """
+    collection = get_collections().predictions
     try:
         role = (current_user or {}).get("role", "PATIENT")
         current_user_id = str((current_user or {}).get("_id", ""))
@@ -76,10 +75,12 @@ async def get_records(
         registros = []
         async for doc in cursor:
             doc["_id"] = str(doc["_id"])
-            # timestamp → ISO string
             ts = doc.get("timestamp")
             if isinstance(ts, datetime):
                 doc["timestamp"] = ts.isoformat()
+            # El vector de probabilidades pesa tanto como el resto del documento
+            # y la tabla del historial no lo usa.
+            doc.pop("probabilities", None)
             registros.append(doc)
 
         response.headers["X-Total-Count"] = str(total_count)
@@ -88,5 +89,8 @@ async def get_records(
 
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al consultar los registros: {str(e)}")
+    except Exception:
+        # No se devuelve str(e): filtraba detalles internos (nombres de coleccion,
+        # errores del driver) al cliente.
+        logger.exception("Error consultando registros para el usuario %s", current_user_id)
+        raise HTTPException(status_code=500, detail="Error al consultar los registros.")

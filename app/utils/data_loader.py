@@ -4,9 +4,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
-from app.config import DATASET_PATH
-
-FRAMES = 35  # consistente con tu pipeline
+from app.config import DATASET_PATH, FRAMES, MIN_SAMPLES_PER_CLASS, RANDOM_STATE, TEST_SIZE
 
 def _infer_features_per_frame(num_cols: int) -> int:
     """
@@ -22,7 +20,19 @@ def _infer_features_per_frame(num_cols: int) -> int:
         )
     return n_total_feats // FRAMES
 
-def load_dataset(test_size: float = 0.2, random_state: int = 42, min_samples_per_class: int = 2):
+def load_dataset(
+    test_size: float = TEST_SIZE,
+    random_state: int = RANDOM_STATE,
+    min_samples_per_class: int = MIN_SAMPLES_PER_CLASS,
+):
+    """
+    Carga el dataset y descarta las clases sin muestras suficientes.
+
+    El umbral era 2, lo que dejaba pasar `tengo_fiebre_y_mareos` (dos grabaciones
+    mal etiquetadas, variante en plural de `tengo_fiebre_y_mareo`). Esa clase
+    acabo en el modelo publicado con 0 muestras en el conjunto de test, es decir,
+    una salida posible que nunca llego a evaluarse.
+    """
     csv_path = str(DATASET_PATH)
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"No se encontró el dataset en: {csv_path}")

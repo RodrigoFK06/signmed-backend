@@ -1,11 +1,19 @@
 .venv/
+venv/
 __pycache__/
 *.pyc
 .idea/
+.vscode/
 .DS_Store
-registros/
 .env
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
 
-# Datasets de entrenamiento (excluidos del repositorio por tamano). Ver data/README.md
+# Datasets de entrenamiento (excluidos por tamano). Ver data/README.md
 data/*.csv
+
+# Documentos subidos en tiempo de ejecucion
 uploads/
+registros/

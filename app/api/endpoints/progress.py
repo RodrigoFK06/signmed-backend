@@ -1,13 +1,10 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Depends
-from app.db.mongodb import collection
+from app.db.mongodb import get_collections
 from app.models.schema import ProgressItem
-from app.services.auth import get_current_user  # JWT → dict con {nickname, email, role}
+from app.services.auth import get_current_user
 import logging
-
-# TODO: INDEXING - Consider an index on (nickname, expected_label, timestamp) or (expected_label, nickname, timestamp) to optimize the /progress aggregation, especially when filtered by nickname. Also, (timestamp) is used for last_attempt.
-# TODO: TESTS - Add unit tests for the progress aggregation pipeline, covering different data scenarios (e.g., no data, data for one label, data for multiple labels, with/without nickname filter) and division by zero handling (mocking MongoDB).
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -23,52 +20,22 @@ async def get_progress(
     user_id: Optional[str] = Query(None, description="Filtrar por user_id (solo ADMIN)"),
     current_user: dict = Depends(get_current_user),
 ):
+    collection = get_collections().predictions
     try:
         role = (current_user or {}).get("role", "PATIENT")
         current_user_id = str((current_user or {}).get("_id", ""))
 
-        logger.info(f"[PROGRESS] Request from role={role}, current_user_id={current_user_id}, requested_user_id={user_id}")
+        # Solo un ADMIN puede consultar el progreso de otra persona.
+        target_user_id = user_id if (role == "ADMIN" and user_id) else current_user_id
+        match_stage: dict = {"user_id": target_user_id}
 
-        # Scope por rol
-        match_stage = {}
-        if role == "ADMIN":
-            # Admin puede ver progreso de cualquier usuario si especifica user_id
-            if user_id:
-                match_stage["user_id"] = user_id
-                logger.info(f"[PROGRESS] Admin viewing user_id={user_id}")
-            # Si no especifica, ve su propio progreso
-            else:
-                match_stage["user_id"] = current_user_id
-                logger.info(f"[PROGRESS] Admin viewing own progress")
-        else:
-            # Usuarios normales: solo su propio progreso
-            match_stage["user_id"] = current_user_id
-            logger.info(f"[PROGRESS] User viewing own progress")
+        # Los registros anteriores a la migracion a `user_id` solo guardaban el
+        # nickname; se incluyen para que el historial no aparezca vacio.
+        legacy_nickname = (current_user or {}).get("nickname") if target_user_id == current_user_id else None
+        if legacy_nickname:
+            match_stage = {"$or": [{"user_id": target_user_id}, {"nickname": legacy_nickname}]}
 
-        logger.info(f"[PROGRESS] MongoDB filter: {match_stage}")
-
-        # Construcción del filtro con fallback para registros legacy
-        # Si el registro no tiene user_id, intentar matchear por nickname (compatibilidad hacia atrás)
-        if match_stage.get("user_id"):
-            # Obtener el nickname del usuario para fallback
-            from app.db.mongodb import users_collection
-            from bson import ObjectId
-            
-            try:
-                user_doc = await users_collection.find_one({"_id": ObjectId(match_stage["user_id"])})
-                user_nickname = user_doc.get("nickname") if user_doc else None
-                
-                if user_nickname:
-                    # Match por user_id O nickname (para registros legacy)
-                    match_stage = {
-                        "$or": [
-                            {"user_id": match_stage["user_id"]},
-                            {"nickname": user_nickname}
-                        ]
-                    }
-                    logger.info(f"[PROGRESS] Using fallback filter with nickname={user_nickname}")
-            except Exception as e:
-                logger.warning(f"[PROGRESS] Could not fetch user nickname for fallback: {e}")
+        logger.debug("Progreso solicitado por %s (rol %s) sobre %s", current_user_id, role, target_user_id)
 
         pipeline = [
             {"$match": match_stage} if match_stage else {"$match": {}},
@@ -144,22 +111,11 @@ async def get_progress(
             {"$sort": {"label": 1}}
         ]
 
-        cursor = collection.aggregate(pipeline)
-        result: List[ProgressItem] = []
-        async for doc in cursor:
-            result.append(doc)
-
-        if not result and user_id:
-            logger.info("No progress data found for user_id: %s", user_id)
-        elif not result:
-            logger.info("No progress data found for current user: %s", current_user_id)
-
+        result: List[ProgressItem] = [doc async for doc in collection.aggregate(pipeline)]
+        if not result:
+            logger.info("Sin datos de progreso para %s", target_user_id)
         return result
 
-    except Exception as e:
-        logger.error("Error calculating progress for user_id '%s': %s", user_id, e, exc_info=True)
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Error al calcular progreso: {str(e)}"
-        )
-        raise HTTPException(status_code=500, detail=f"Error al obtener el progreso: {str(e)}")
+    except Exception:
+        logger.exception("Error calculando el progreso de %s", target_user_id)
+        raise HTTPException(status_code=500, detail="Error al calcular el progreso.")
