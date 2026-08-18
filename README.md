@@ -11,6 +11,11 @@ CNN+LSTM y gestiona usuarios, práctica guiada, exámenes y progreso.
 
 Frontend: [signmed-frontend](https://github.com/RodrigoFK06/signmed-frontend)
 
+> 📋 **[Auditoría técnica completa](docs/AUDITORIA.md)** — los fallos encontrados
+> en el proyecto original (incluido uno que dejaba las manos fuera del vector de
+> features del modelo), la evidencia que los demuestra y las correcciones
+> aplicadas.
+
 ---
 
 ## Arquitectura
@@ -28,7 +33,7 @@ app/
 ├── db/            cliente MongoDB, colecciones e índices
 └── utils/         feature_extraction · data_loader · holistic_tracking
 artifacts/         modelo, encoder, estadísticas y catálogo de señas
-docs/              MODEL_NOTES.md
+docs/              AUDITORIA.md · MODEL_NOTES.md
 tests/             suite pytest
 ```
 
