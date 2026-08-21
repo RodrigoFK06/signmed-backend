@@ -17,3 +17,7 @@ data/*.csv
 # Documentos subidos en tiempo de ejecucion
 uploads/
 registros/
+
+# --- Grafo de conocimiento (graphify) ---
+# Derivado del codigo: se regenera con `graphify . --code-only`.
+graphify-out/
